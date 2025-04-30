@@ -18,8 +18,12 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 std::unordered_map<std::string, std::string> NetworkProviders {
   {"iPhone", "123456789"},
-  {"MIRO.NET", "alekalek1"}
+  {"MIRO.NET", "alekalek1"},
+  {"A1_A57BEB","aa955af8"}
+
 };
+
+#define BUZZER_PIN 18
 
 // Wi-Fi and Time
 const char* ntpServer = "pool.ntp.org";
@@ -36,6 +40,10 @@ int currentPrayer = 0;
 String prayerNames[5] = {"Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"};
 String prayerTimes[5];
 
+unsigned long timeUntilMidnight = 0;
+unsigned long bootTimeMillis = 0;
+bool fetchedToday = false;
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Booting...");
@@ -49,37 +57,18 @@ void setup() {
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
 
-  
-  for (auto& pair : NetworkProviders) {
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println("Connecting:");
-    display.setCursor(0, 30);
-    display.println(pair.first.c_str());
-    display.display();
-
-    WiFi.begin(pair.first.c_str(), pair.second.c_str());
-    Serial.print("Connecting to WiFi...");
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 20) {
-      delay(500);
-      Serial.print(".");
-      retries++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nWiFi Connected!");
+  while(true){
+    if (reconnectWiFi()){
       break;
     }
   }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Failed to connect to any WiFi");
-    while (true);
-  }
+ 
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   delay(2000);
+
+  pinMode(BUZZER_PIN,OUTPUT);
+  digitalWrite(BUZZER_PIN,0);
 
   String currentDate = getCurrentDate();
   lastUpdateDate = currentDate;
@@ -87,19 +76,43 @@ void setup() {
   fetchPrayerTimes(apiUrl);
 }
 
+bool noWiFiMode =false;
+
 void loop() {
 
+  
+
   if (WiFi.status() != WL_CONNECTED) {
-    displayNoWiFi(); 
-    Serial.println("WiFi lost, reconnecting...");
-    reconnectWiFi();  
-  } else {
-   
-    display.clearDisplay();
-  }
+  noWiFiMode = true;
+  displayNoWiFi(); 
+  Serial.println("WiFi lost, reconnecting...");
+  reconnectWiFi();  
+} else {
+  noWiFiMode = false;
+}
 
+if (noWiFiMode) {
+  handleNoConnection();
+} else {
+  handleWithConnection();
+  calculateTimeUntilMidnight();
+}
+
+
+
+  
+}
+
+void handleNoConnection(){
+  Serial.println("NO WIFI MODE");
+  delay(1000);
+}
+
+void handleWithConnection(){
   String currentDate = getCurrentDate();
+  digitalWrite(BUZZER_PIN,HIGH);
 
+  // fetch the new times if new day
   if (currentDate != lastUpdateDate && currentDate != "") {
     Serial.println("New day detected! Fetching prayer times...");
     String apiUrl = "https://api.aladhan.com/v1/timingsByCity/" + currentDate + "?city=Sofia&country=Bulgaria&method=13";
@@ -107,22 +120,42 @@ void loop() {
     lastUpdateDate = currentDate;
   }
 
-  unsigned long currentMillis = millis();
-  if ((long)(currentMillis - previousMillis) >= interval) {
-    previousMillis = currentMillis;
+  Serial.println("Current Date:");
+  Serial.println(currentDate);
 
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(0, 0);
-    display.println(prayerNames[currentPrayer]);
-    display.setCursor(0, 30);
-    display.println(prayerTimes[currentPrayer]);
-    display.display();
+  displayPrayerTime(currentPrayer);
 
-    currentPrayer++;
-    if (currentPrayer >= 5) currentPrayer = 0;
+  String str = currentDate + prayerTimes[currentPrayer];
+  Serial.println("Current prayer time: ");
+  Serial.println(str);
+
+  currentPrayer++;
+  if (currentPrayer >= 5){
+    currentPrayer = 0;
   }
+
+  delay(3000);
+
+  
+
+
+
+
+
 }
+
+
+void displayPrayerTime(const int currentPrayer){
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  display.println(prayerNames[currentPrayer]);
+  display.setCursor(0, 30);
+  display.println(prayerTimes[currentPrayer]);
+  display.display();
+}
+
 
 String getCurrentDate() {
   struct tm timeinfo;
@@ -133,6 +166,31 @@ String getCurrentDate() {
   char dateBuffer[11];
   strftime(dateBuffer, sizeof(dateBuffer), "%Y-%m-%d", &timeinfo);
   return String(dateBuffer);
+}
+
+time_t getCurrentTimestamp() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return 0;
+  }
+
+  time_t now = mktime(&timeinfo); // Converts struct tm to time_t
+  return now;
+}
+
+time_t parsePrayerTimeToTimestamp(const int prayer){
+
+  Serial.println("Parsing Prayer time to timestamp: ");
+
+
+  String tm =  prayerTimes[prayer];
+  Serial.print("Prayer :");
+  Serial.print(prayerNames[prayer]);
+  Serial.println(tm);
+
+
+
+  return time(nullptr);
 }
 
 void fetchPrayerTimes(const String& apiUrl) {
@@ -191,10 +249,20 @@ void parsePrayerTimes(const String& payload) {
   Serial.println("Isha: " + isha);
 }
 
-void reconnectWiFi() {
+int reconnectWiFi() {
+  
   for (auto& pair : NetworkProviders) {
-    Serial.print("Reconnecting to WiFi network: ");
+    Serial.print("Connecting to WiFi network: ");
     Serial.println(pair.first.c_str());
+    
+    display.clearDisplay();
+
+    display.setCursor(0, 0);
+    display.println("Connecting");
+    display.setCursor(0, 30);
+    display.println(pair.first.c_str());
+    display.display();
+
     WiFi.begin(pair.first.c_str(), pair.second.c_str());
 
     int retries = 0;
@@ -206,12 +274,32 @@ void reconnectWiFi() {
 
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\nWiFi Reconnected!");
-      return;
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("Connected");
+
+      delay(1000);
+      display.clearDisplay();
+      
+      return 1;
     }
   }
   Serial.println("Failed to reconnect to WiFi");
+  return 0;
 }
 
+
+void calculateTimeUntilMidnight() {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    int secondsNow = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+    timeUntilMidnight = (86400 - secondsNow) * 1000UL;
+    bootTimeMillis = millis();
+    Serial.printf("Next update in %lu ms\n", timeUntilMidnight);
+  } else {
+    Serial.println("Failed to calculate time until midnight.");
+  }
+}
 
 void displayNoWiFi() {
   display.setTextSize(2);
