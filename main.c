@@ -73,87 +73,68 @@ void setup() {
   String currentDate = getCurrentDate();
   lastUpdateDate = currentDate;
   String apiUrl = "https://api.aladhan.com/v1/timingsByCity/" + currentDate + "?city=Sofia&country=Bulgaria&method=13";
+
   fetchPrayerTimes(apiUrl);
+
+  calculateTimeUntilMidnight();
+
+  disconnectWiFi();
+  
 }
 
 bool noWiFiMode =false;
 
 void loop() {
+  if ((millis() - bootTimeMillis) >= timeUntilMidnight) {
+    Serial.println("Midnight reached. Fetching new prayer times...");
 
-  
+    while (!reconnectWiFi()) {
+      Serial.println("Error connecting to internet, times MUST be fetched!");
+    }
 
-  if (WiFi.status() != WL_CONNECTED) {
-  noWiFiMode = true;
-  displayNoWiFi(); 
-  Serial.println("WiFi lost, reconnecting...");
-  reconnectWiFi();  
-} else {
-  noWiFiMode = false;
-}
+    String newDate = getCurrentDate();
+    lastUpdateDate = newDate;
 
-if (noWiFiMode) {
-  handleNoConnection();
-} else {
-  handleWithConnection();
-  calculateTimeUntilMidnight();
-}
+    fetchPrayerTimes(newDate);  // Fetch without tracking success flag
 
-
-
-  
-}
-
-void handleNoConnection(){
-  Serial.println("NO WIFI MODE");
-  delay(1000);
-}
-
-void handleWithConnection(){
-  String currentDate = getCurrentDate();
-  digitalWrite(BUZZER_PIN,HIGH);
-
-  // fetch the new times if new day
-  if (currentDate != lastUpdateDate && currentDate != "") {
-    Serial.println("New day detected! Fetching prayer times...");
-    String apiUrl = "https://api.aladhan.com/v1/timingsByCity/" + currentDate + "?city=Sofia&country=Bulgaria&method=13";
-    fetchPrayerTimes(apiUrl);
-    lastUpdateDate = currentDate;
+    calculateTimeUntilMidnight();  // Recalculate for next day
+    disconnectWiFi();
   }
 
-  Serial.println("Current Date:");
-  Serial.println(currentDate);
-
-  displayPrayerTime(currentPrayer);
-
-  String str = currentDate + prayerTimes[currentPrayer];
-  Serial.println("Current prayer time: ");
-  Serial.println(str);
-
-  currentPrayer++;
-  if (currentPrayer >= 5){
-    currentPrayer = 0;
-  }
-
-  delay(3000);
-
+  displayPrayerTimes();
   
-
-
-
-
-
 }
 
 
-void displayPrayerTime(const int currentPrayer){
+void disconnectWiFi() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  Serial.println("WiFi disconnected.");
+}
 
-  display.clearDisplay();
+
+
+void displayPrayerTimes(){
+
+  
   display.setTextSize(2);
   display.setCursor(0, 0);
-  display.println(prayerNames[currentPrayer]);
-  display.setCursor(0, 30);
-  display.println(prayerTimes[currentPrayer]);
-  display.display();
+  
+  digitalWrite(BUZZER_PIN,HIGH);
+
+  for(int i =0;i <5 ;++i){
+    display.clearDisplay();
+    
+   display.println(prayerNames[i]);
+   display.setCursor(0, 30);
+   display.println(prayerTimes[i]);
+   display.display();
+
+   delay(3000); 
+  }
+  digitalWrite(BUZZER_PIN,0);
+
+ 
 }
 
 
@@ -168,30 +149,9 @@ String getCurrentDate() {
   return String(dateBuffer);
 }
 
-time_t getCurrentTimestamp() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return 0;
-  }
-
-  time_t now = mktime(&timeinfo); // Converts struct tm to time_t
-  return now;
-}
-
-time_t parsePrayerTimeToTimestamp(const int prayer){
-
-  Serial.println("Parsing Prayer time to timestamp: ");
-
-
-  String tm =  prayerTimes[prayer];
-  Serial.print("Prayer :");
-  Serial.print(prayerNames[prayer]);
-  Serial.println(tm);
 
 
 
-  return time(nullptr);
-}
 
 void fetchPrayerTimes(const String& apiUrl) {
   WiFiClientSecure client;
@@ -199,6 +159,10 @@ void fetchPrayerTimes(const String& apiUrl) {
 
   HTTPClient https;
   Serial.println("Fetching Prayer Times...");
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Fetching..");
 
   if (https.begin(client, apiUrl)) {
     int httpCode = https.GET();
@@ -250,37 +214,38 @@ void parsePrayerTimes(const String& payload) {
 }
 
 int reconnectWiFi() {
-  
   for (auto& pair : NetworkProviders) {
     Serial.print("Connecting to WiFi network: ");
     Serial.println(pair.first.c_str());
-    
-    display.clearDisplay();
 
+    WiFi.disconnect(true);       // Ensure previous state is cleared
+    delay(100);                  // Let it settle
+    WiFi.mode(WIFI_STA);         // Set to station mode
+    WiFi.begin(pair.first.c_str(), pair.second.c_str());
+
+    display.clearDisplay();
     display.setCursor(0, 0);
     display.println("Connecting");
     display.setCursor(0, 30);
     display.println(pair.first.c_str());
     display.display();
 
-    WiFi.begin(pair.first.c_str(), pair.second.c_str());
-
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 20) {
-      delay(500);
+      delay(350);
       Serial.print(".");
       retries++;
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nWiFi Reconnected!");
+      Serial.println("\nWiFi Connected!");
+
       display.clearDisplay();
       display.setCursor(0, 0);
       display.println("Connected");
-
+      display.display();
       delay(1000);
       display.clearDisplay();
-      
       return 1;
     }
   }
@@ -289,21 +254,26 @@ int reconnectWiFi() {
 }
 
 
-void calculateTimeUntilMidnight() {
+
+time_t calculateTimeUntilMidnight() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
     int secondsNow = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
     timeUntilMidnight = (86400 - secondsNow) * 1000UL;
     bootTimeMillis = millis();
-    Serial.printf("Next update in %lu ms\n", timeUntilMidnight);
+    Serial.printf("Time now: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    Serial.printf("Next update in %lu ms (%.2f hours)\n", timeUntilMidnight, timeUntilMidnight / 3600000.0);
+    return timeUntilMidnight;
   } else {
     Serial.println("Failed to calculate time until midnight.");
+    return 0;
   }
 }
 
+
+
+
 void displayNoWiFi() {
-  display.setTextSize(2);
-  display.setTextColor(SSD1306_WHITE);
   display.setCursor(100, 0);  
   display.println("No WiFi");
   display.display();
