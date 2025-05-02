@@ -23,7 +23,7 @@ std::unordered_map<std::string, std::string> NetworkProviders {
 
 };
 
-#define BUZZER_PIN 18
+#define BUZZER_PIN 13
 
 // Wi-Fi and Time
 const char* ntpServer = "pool.ntp.org";
@@ -95,13 +95,22 @@ void loop() {
     String newDate = getCurrentDate();
     lastUpdateDate = newDate;
 
-    fetchPrayerTimes(newDate);  // Fetch without tracking success flag
+    fetchPrayerTimes(newDate);  
 
-    calculateTimeUntilMidnight();  // Recalculate for next day
+    calculateTimeUntilMidnight(); 
     disconnectWiFi();
   }
 
-  displayPrayerTimes();
+  displayPrayerTimes(1000);
+
+  long secondsLeft = secondsUntilNextPrayer();
+  if ( secondsLeft < 10000){
+      digitalWrite(BUZZER_PIN, HIGH);
+  }
+
+
+
+
   
 }
 
@@ -114,25 +123,30 @@ void disconnectWiFi() {
 
 
 
-void displayPrayerTimes(){
+void displayPrayerTimes(int freeze){
 
-  
-  display.setTextSize(2);
-  display.setCursor(0, 0);
-  
   digitalWrite(BUZZER_PIN,HIGH);
 
   for(int i =0;i <5 ;++i){
     display.clearDisplay();
+
+    display.setTextSize(2);
+    display.setCursor(0, 0);
     
    display.println(prayerNames[i]);
    display.setCursor(0, 30);
    display.println(prayerTimes[i]);
    display.display();
 
-   delay(3000); 
+
+   Serial.println(prayerNames[i]);
+   stotime_t(prayerTimes[i].c_str());
+
+   delay(freeze); 
   }
-  digitalWrite(BUZZER_PIN,0);
+  digitalWrite(BUZZER_PIN,LOW);
+
+
 
  
 }
@@ -269,6 +283,72 @@ time_t calculateTimeUntilMidnight() {
     return 0;
   }
 }
+
+long secondsUntilNextPrayer() {
+  time_t now = time(NULL);
+  time_t nextPrayerTime = 0;
+
+  for (int i = 0; i < 5; i++) {
+    time_t pt = stotime_t(prayerTimes[i].c_str());
+
+    if (pt > now) {
+      nextPrayerTime = pt;
+      break;
+    }
+  }
+
+  // If no future prayer today, use tomorrow's Fajr
+  if (nextPrayerTime == 0) {
+    struct tm tomorrow = *localtime(&now);
+    tomorrow.tm_mday += 1;
+    tomorrow.tm_hour = 0;
+    tomorrow.tm_min = 0;
+    tomorrow.tm_sec = 0;
+    mktime(&tomorrow);  // Normalize the date
+
+    time_t fajrTomorrow = stotime_t(prayerTimes[0].c_str());
+    struct tm fajrTm = *localtime(&fajrTomorrow);
+    fajrTm.tm_mday = tomorrow.tm_mday;
+    fajrTm.tm_mon = tomorrow.tm_mon;
+    fajrTm.tm_year = tomorrow.tm_year;
+
+    nextPrayerTime = mktime(&fajrTm);
+  }
+
+  return difftime(nextPrayerTime, now);  // returns seconds
+}
+
+// function to convert prayer time into a time_t
+time_t stotime_t(const char * str)
+{
+    int hour, minute;
+    sscanf(str, "%d:%d", &hour, &minute);
+
+    Serial.printf("%d hour : %d min\n", hour, minute);
+
+    time_t now = time(NULL);
+    struct tm tm_info = *localtime(&now);  // Copy to avoid modifying static memory
+    tm_info.tm_hour = hour;
+    tm_info.tm_min = minute;
+    tm_info.tm_sec = 0;
+
+    time_t timestamp = mktime(&tm_info);
+
+    Serial.printf("time_t: %lld\n", (long long)timestamp);
+
+    return timestamp;
+}
+
+
+class PrayerTime{
+  public:
+  time_t time_stamp;
+  String time;
+  String name;
+  bool in_time;
+};
+
+
 
 
 
